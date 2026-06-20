@@ -63,17 +63,25 @@ if uploaded_file is not None:
         google_api_key=os.getenv("GOOGLE_API_KEY")
     )
 
+    metadatas = []
+
+    for i in range(len(chunks)):
+        metadatas.append({
+            "source": uploaded_file.name,
+            "chunk": i + 1
+        })
+
     vector_store = Chroma.from_texts(
         texts=chunks,
         embedding=embeddings,
-        persist_directory="./chroma_db"
+        metadatas=metadatas
     )
 
     retriever = vector_store.as_retriever(
         search_kwargs={"k": 2}
     )
 
-    st.success("PDF indexed successfully in ChromaDB!")
+    st.success("PDF indexed successfully!")
 
 st.divider()
 
@@ -88,9 +96,19 @@ if st.button("Submit"):
         else:
             docs = retriever.invoke(question)
 
-            context = ""
+            unique_docs = []
+            seen_chunks = set()
 
             for doc in docs:
+                chunk_id = doc.metadata.get("chunk")
+
+                if chunk_id not in seen_chunks:
+                    seen_chunks.add(chunk_id)
+                    unique_docs.append(doc)
+
+            context = ""
+
+            for doc in unique_docs:
                 context += doc.page_content + "\n\n"
 
             prompt = f"""
@@ -109,11 +127,18 @@ Question:
 
             st.subheader("Answer")
             st.write(response.content)
+            st.caption("Answer generated using the retrieved PDF chunks shown below.")
 
-            st.subheader("Retrieved Sources")
-            for i, doc in enumerate(docs):
-                st.write(f"Source {i + 1}")
-                st.write(doc.page_content)
+            st.subheader("Sources Used")
+
+            for i, doc in enumerate(unique_docs):
+                source_name = doc.metadata.get("source", "Uploaded PDF")
+                chunk_number = doc.metadata.get("chunk", "N/A")
+
+                with st.expander(
+                    f"Source {i + 1}: {source_name} | Chunk {chunk_number}"
+                ):
+                    st.write(doc.page_content)
 
     else:
         st.warning("Please enter a question.")
