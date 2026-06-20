@@ -22,6 +22,8 @@ uploaded_file = st.file_uploader(
     type=["pdf"]
 )
 
+retriever = None
+
 if uploaded_file is not None:
     pdf_reader = PdfReader(uploaded_file)
 
@@ -36,7 +38,7 @@ if uploaded_file is not None:
     st.write(f"Total pages: {len(pdf_reader.pages)}")
 
     st.subheader("Extracted PDF Text")
-    st.text_area("PDF Content", text, height=300)
+    st.text_area("PDF Content", text, height=250)
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=300,
@@ -53,7 +55,7 @@ if uploaded_file is not None:
         st.text_area(
             f"Preview Chunk {i + 1}",
             chunk,
-            height=150
+            height=120
         )
 
     embeddings = GoogleGenerativeAIEmbeddings(
@@ -67,17 +69,51 @@ if uploaded_file is not None:
         persist_directory="./chroma_db"
     )
 
-    st.success("Chunks converted into embeddings and stored in ChromaDB!")
+    retriever = vector_store.as_retriever(
+        search_kwargs={"k": 2}
+    )
+
+    st.success("PDF indexed successfully in ChromaDB!")
 
 st.divider()
 
-st.subheader("Ask a general question")
+st.subheader("Ask a question from your PDF")
 
 question = st.text_input("Ask a question:")
 
 if st.button("Submit"):
     if question:
-        response = llm.invoke(question)
-        st.write(response.content)
+        if retriever is None:
+            st.warning("Please upload a PDF first.")
+        else:
+            docs = retriever.invoke(question)
+
+            context = ""
+
+            for doc in docs:
+                context += doc.page_content + "\n\n"
+
+            prompt = f"""
+Answer the question using only the context below.
+If the answer is not found in the context, say:
+"I could not find this information in the uploaded PDF."
+
+Context:
+{context}
+
+Question:
+{question}
+"""
+
+            response = llm.invoke(prompt)
+
+            st.subheader("Answer")
+            st.write(response.content)
+
+            st.subheader("Retrieved Sources")
+            for i, doc in enumerate(docs):
+                st.write(f"Source {i + 1}")
+                st.write(doc.page_content)
+
     else:
         st.warning("Please enter a question.")
