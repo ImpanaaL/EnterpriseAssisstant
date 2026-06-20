@@ -17,6 +17,9 @@ llm = ChatGoogleGenerativeAI(
 
 st.title("Safety & Compliance Knowledge Assistant")
 
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
 uploaded_file = st.file_uploader(
     "Upload your safety/compliance PDF",
     type=["pdf"]
@@ -125,20 +128,30 @@ Question:
 
             response = llm.invoke(prompt)
 
-            st.subheader("Answer")
-            st.write(response.content)
-            st.caption("Answer generated using the retrieved PDF chunks shown below.")
-
-            st.subheader("Sources Used")
-
-            for i, doc in enumerate(unique_docs):
-                source_name = doc.metadata.get("source", "Uploaded PDF")
-                chunk_number = doc.metadata.get("chunk", "N/A")
-
-                with st.expander(
-                    f"Source {i + 1}: {source_name} | Chunk {chunk_number}"
-                ):
-                    st.write(doc.page_content)
+            st.session_state.chat_history.append({
+                "question": question,
+                "answer": response.content,
+                "sources": unique_docs
+            })
 
     else:
         st.warning("Please enter a question.")
+
+if st.session_state.chat_history:
+    st.subheader("Chat History")
+
+    for chat in reversed(st.session_state.chat_history):
+        st.markdown(f"**You:** {chat['question']}")
+        st.markdown(f"**Assistant:** {chat['answer']}")
+
+        with st.expander("Sources Used"):
+            for i, doc in enumerate(chat["sources"]):
+                source_name = doc.metadata.get("source", "Uploaded PDF")
+                chunk_number = doc.metadata.get("chunk", "N/A")
+
+                st.write(f"Source {i + 1}: {source_name} | Chunk {chunk_number}")
+                st.write(doc.page_content)
+
+    if st.button("Clear Chat"):
+        st.session_state.chat_history = []
+        st.rerun()
