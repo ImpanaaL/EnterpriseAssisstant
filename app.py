@@ -2,8 +2,11 @@ import streamlit as st
 from dotenv import load_dotenv
 import os
 from pypdf import PdfReader
+
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
 
 load_dotenv()
 
@@ -14,7 +17,10 @@ llm = ChatGoogleGenerativeAI(
 
 st.title("Safety & Compliance Knowledge Assistant")
 
-uploaded_file = st.file_uploader("Upload your safety/compliance PDF", type=["pdf"])
+uploaded_file = st.file_uploader(
+    "Upload your safety/compliance PDF",
+    type=["pdf"]
+)
 
 if uploaded_file is not None:
     pdf_reader = PdfReader(uploaded_file)
@@ -33,9 +39,9 @@ if uploaded_file is not None:
     st.text_area("PDF Content", text, height=300)
 
     text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=300,
-    chunk_overlap=50
-)
+        chunk_size=300,
+        chunk_overlap=50
+    )
 
     chunks = text_splitter.split_text(text)
 
@@ -49,6 +55,19 @@ if uploaded_file is not None:
             chunk,
             height=150
         )
+
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/gemini-embedding-001",
+        google_api_key=os.getenv("GOOGLE_API_KEY")
+    )
+
+    vector_store = Chroma.from_texts(
+        texts=chunks,
+        embedding=embeddings,
+        persist_directory="./chroma_db"
+    )
+
+    st.success("Chunks converted into embeddings and stored in ChromaDB!")
 
 st.divider()
 
