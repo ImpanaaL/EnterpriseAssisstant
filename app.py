@@ -1,289 +1,312 @@
-import os
-import uuid
-import re
 import streamlit as st
-from dotenv import load_dotenv
-from pypdf import PdfReader
 
-from langchain_core.documents import Document
-from langchain_core.prompts import PromptTemplate
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from rag_core import RAGPipeline
 
 
-load_dotenv()
+st.set_page_config(
+    page_title="Document Q&A Assistant",
+    layout="wide",
+)
 
-st.set_page_config(page_title="Safety & Compliance Knowledge Assistant", layout="wide")
-st.title("Safety & Compliance Knowledge Assistant")
+st.title("Document Q&A Assistant")
+st.caption(
+    "Upload PDF or Word documents and ask questions from them."
+)
 
-if "vectorstore" not in st.session_state:
-    st.session_state.vectorstore = None
 
-if "chunks" not in st.session_state:
-    st.session_state.chunks = []
+if "pipeline" not in st.session_state:
+    try:
+        st.session_state.pipeline = RAGPipeline()
+    except Exception as error:
+        st.error(
+            f"Application initialization failed: {error}"
+        )
+        st.stop()
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-if "indexed_file_names" not in st.session_state:
-    st.session_state.indexed_file_names = []
+if "indexed_files" not in st.session_state:
+    st.session_state.indexed_files = []
 
-if "total_files" not in st.session_state:
-    st.session_state.total_files = 0
-
-if "total_pages" not in st.session_state:
-    st.session_state.total_pages = 0
-
-if "total_chunks" not in st.session_state:
-    st.session_state.total_chunks = 0
+if "index_result" not in st.session_state:
+    st.session_state.index_result = None
 
 
-def extract_pdf_documents(uploaded_files):
-    documents = []
-    total_pages = 0
-
-    for uploaded_file in uploaded_files:
-        pdf_reader = PdfReader(uploaded_file)
-        total_pages += len(pdf_reader.pages)
-
-        for page_number, page in enumerate(pdf_reader.pages, start=1):
-            text = page.extract_text()
-
-            if text and text.strip():
-                documents.append(
-                    Document(
-                        page_content=text,
-                        metadata={
-                            "source": uploaded_file.name,
-                            "page": page_number
-                        }
-                    )
-                )
-
-    return documents, total_pages
-
-
-def create_chunks(documents):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=250,
-        separators=["\n\n", "\n", ". ", ": ", " ", ""]
-    )
-
-    return splitter.split_documents(documents)
-
-
-def create_vectorstore(chunks):
-    persist_directory = f"chroma_db_{uuid.uuid4().hex}"
-
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/gemini-embedding-001",
-        google_api_key=os.getenv("GOOGLE_API_KEY")
-    )
-
-    return Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-        persist_directory=persist_directory
-    )
-
-
-def clean_words(text):
-    stopwords = {
-        "what", "is", "the", "a", "an", "of", "in", "on", "for", "to",
-        "from", "and", "or", "with", "this", "that", "are", "was", "were"
-    }
-
-    words = re.findall(r"\b[a-zA-Z]+\b", text.lower())
-
-    return [word for word in words if word not in stopwords and len(word) > 2]
-
-
-def keyword_search(question, chunks, limit=4):
-    question_words = clean_words(question)
-    scored_chunks = []
-
-    for chunk in chunks:
-        text = chunk.page_content.lower()
-        score = sum(1 for word in question_words if word in text)
-
-        if "equal employment opportunity" in question.lower():
-            if "equal employment opportunity" in text or "equal opportunity employers" in text:
-                score += 10
-
-        if score > 0:
-            scored_chunks.append((score, chunk))
-
-    scored_chunks.sort(key=lambda x: x[0], reverse=True)
-
-    return [chunk for score, chunk in scored_chunks[:limit]]
-
-
-def retrieve_docs(question, vectorstore, chunks):
-    retriever = vectorstore.as_retriever(
-        search_type="mmr",
-        search_kwargs={
-            "k": 4,
-            "fetch_k": 20
-        }
-    )
-
-    semantic_docs = retriever.invoke(question)
-    keyword_docs = keyword_search(question, chunks, limit=4)
-
-    final_docs = []
-    seen = set()
-
-    for doc in keyword_docs + semantic_docs:
-        key = f"{doc.metadata.get('source')}-{doc.metadata.get('page')}-{doc.page_content[:200]}"
-
-        if key not in seen:
-            final_docs.append(doc)
-            seen.add(key)
-
-    return final_docs[:4]
-
-
-def fallback_answer(docs):
-    best_doc = docs[0]
-    text = best_doc.page_content.strip()
-    source = best_doc.metadata.get("source")
-    page = best_doc.metadata.get("page")
-
-    return f"{text} ({source}, Page {page})"
-
-
-def generate_answer(question, docs):
-    if not docs:
-        return "I could not find this information in the uploaded PDFs."
-
-    context = "\n\n".join(
-        f"Source: {doc.metadata.get('source')} | Page: {doc.metadata.get('page')}\n{doc.page_content}"
-        for doc in docs
-    )
-
-    prompt = PromptTemplate.from_template(
-        """
-You are a Safety & Compliance Knowledge Assistant.
-
-Use ONLY the PDF context below.
-
-If the context contains relevant information, answer from it.
-Do not say the information is not found when the context contains related text.
-
-PDF Context:
-{context}
-
-Question:
-{question}
-
-Answer clearly in 2-4 sentences.
-Include the source file name and page number.
-"""
-    )
-
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash-lite",
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
-        temperature=0
-    )
-
-    response = llm.invoke(prompt.format(context=context, question=question))
-    answer = response.content.strip()
-
-    if "could not find" in answer.lower() or "not found" in answer.lower():
-        return fallback_answer(docs)
-
-    return answer
+pipeline = st.session_state.pipeline
 
 
 with st.sidebar:
-    st.header("Upload PDFs")
+    st.header("Upload Documents")
 
     uploaded_files = st.file_uploader(
-        "Upload one or more safety/compliance PDFs",
-        type=["pdf"],
-        accept_multiple_files=True
+        "Upload PDF or Word files",
+        type=["pdf", "docx"],
+        accept_multiple_files=True,
     )
 
-    current_file_names = [file.name for file in uploaded_files] if uploaded_files else []
+    current_files = []
 
-    if uploaded_files and current_file_names != st.session_state.indexed_file_names:
-        with st.spinner("Auto-indexing uploaded PDFs..."):
-            documents, total_pages = extract_pdf_documents(uploaded_files)
+    if uploaded_files:
+        current_files = [
+            f"{uploaded_file.name}-{uploaded_file.size}"
+            for uploaded_file in uploaded_files
+        ]
 
-            if not documents:
-                st.error("No readable text found in the uploaded PDFs.")
-                st.session_state.vectorstore = None
-                st.session_state.chunks = []
-                st.session_state.indexed_file_names = []
-            else:
-                chunks = create_chunks(documents)
-                vectorstore = create_vectorstore(chunks)
+    files_changed = (
+        current_files
+        != st.session_state.indexed_files
+    )
 
-                st.session_state.vectorstore = vectorstore
-                st.session_state.chunks = chunks
-                st.session_state.indexed_file_names = current_file_names
-                st.session_state.total_files = len(uploaded_files)
-                st.session_state.total_pages = total_pages
-                st.session_state.total_chunks = len(chunks)
-                st.session_state.chat_history = []
+    if uploaded_files and files_changed:
+        try:
+            with st.spinner(
+                "Reading and indexing documents..."
+            ):
+                result = pipeline.index_files(
+                    uploaded_files
+                )
 
-    if st.session_state.vectorstore is not None:
-        st.success("PDFs indexed successfully!")
-        st.write(f"Total files: {st.session_state.total_files}")
-        st.write(f"Total pages: {st.session_state.total_pages}")
-        st.write(f"Total chunks: {st.session_state.total_chunks}")
+            st.session_state.index_result = result
+            st.session_state.indexed_files = current_files
+            st.session_state.chat_history = []
 
-        with st.expander("View chunks"):
-            for i, chunk in enumerate(st.session_state.chunks, start=1):
-                st.markdown(f"### Chunk {i}")
-                st.write(f"File: {chunk.metadata.get('source')}")
-                st.write(f"Page: {chunk.metadata.get('page')}")
-                st.write(chunk.page_content[:1000])
-
-
-st.subheader("Ask a question from the uploaded PDFs")
-
-question = st.text_input("Ask a question:")
-
-if st.button("Submit"):
-    if not question.strip():
-        st.warning("Please enter a question.")
-    elif st.session_state.vectorstore is None:
-        st.warning("Please upload PDFs first.")
-    else:
-        with st.spinner("Searching PDFs and generating answer..."):
-            docs = retrieve_docs(
-                question,
-                st.session_state.vectorstore,
-                st.session_state.chunks
+        except Exception as error:
+            st.error(
+                f"Indexing failed: {error}"
             )
 
-            answer = generate_answer(question, docs)
+    if not uploaded_files and st.session_state.indexed_files:
+        pipeline.vector_manager.clear()
+        st.session_state.indexed_files = []
+        st.session_state.index_result = None
+        st.session_state.chat_history = []
+
+    result = st.session_state.index_result
+
+    if result is not None:
+        if result.total_chunks > 0:
+            st.success(
+                "Documents indexed successfully"
+            )
+
+            st.write(
+                f"Files selected: {result.total_files}"
+            )
+
+            st.write(
+                f"Document units processed: "
+                f"{result.total_pages}"
+            )
+
+            st.write(
+                f"Chunks created: "
+                f"{result.total_chunks}"
+            )
+
+            if result.skipped_files:
+                st.warning(
+                    "Skipped files: "
+                    + ", ".join(result.skipped_files)
+                )
+
+            if result.errors:
+                with st.expander("Indexing messages"):
+                    for error in result.errors:
+                        st.warning(error)
+
+            with st.expander("View indexed chunks"):
+                chunks = (
+                    pipeline.vector_manager
+                    .get_all_chunks()
+                )
+
+                if not chunks:
+                    st.caption(
+                        "No chunks are currently indexed."
+                    )
+
+                for index, chunk in enumerate(
+                    chunks,
+                    start=1,
+                ):
+                    source_name = chunk.metadata.get(
+                        "source",
+                        "Unknown document",
+                    )
+
+                    location = chunk.metadata.get(
+                        "location",
+                        "Unknown location",
+                    )
+
+                    st.markdown(
+                        f"**Chunk {index}**"
+                    )
+
+                    st.caption(
+                        f"{source_name} — {location}"
+                    )
+
+                    st.write(
+                        chunk.page_content[:500]
+                    )
+
+                    if len(chunk.page_content) > 500:
+                        st.caption(
+                            "Preview shortened."
+                        )
+
+                    st.divider()
+
+        else:
+            st.error(
+                "No readable text was found "
+                "in the selected documents."
+            )
+
+            for error in result.errors:
+                st.warning(error)
+
+    st.divider()
+
+    if st.button(
+        "Clear indexed documents",
+        use_container_width=True,
+    ):
+        pipeline.vector_manager.clear()
+
+        st.session_state.index_result = None
+        st.session_state.indexed_files = []
+        st.session_state.chat_history = []
+
+        st.rerun()
+
+    if st.button(
+        "Reset conversation",
+        use_container_width=True,
+    ):
+        st.session_state.chat_history = []
+        st.rerun()
+
+
+st.subheader("Ask a question")
+
+question = st.text_input(
+    "Your question",
+    placeholder=(
+        "Example: Compare the focus "
+        "of both documents."
+    ),
+)
+
+submit = st.button(
+    "Submit",
+    type="primary",
+)
+
+
+has_documents = (
+    st.session_state.index_result is not None
+    and st.session_state.index_result.total_chunks > 0
+)
+
+
+if submit:
+    cleaned_question = question.strip()
+
+    if not cleaned_question:
+        st.warning(
+            "Please enter a question."
+        )
+
+    elif not has_documents:
+        st.warning(
+            "Please upload and index "
+            "at least one readable document."
+        )
+
+    else:
+        try:
+            with st.spinner(
+                "Searching documents..."
+            ):
+                answer_result = pipeline.ask(
+                    cleaned_question
+                )
 
             st.session_state.chat_history.append(
                 {
-                    "question": question,
-                    "answer": answer,
-                    "sources": docs
+                    "question": cleaned_question,
+                    "answer": answer_result.answer,
+                    "sources": answer_result.sources,
                 }
+            )
+
+            st.rerun()
+
+        except Exception as error:
+            st.error(
+                f"Unable to answer the question: {error}"
             )
 
 
 st.divider()
-st.subheader("Chat History")
+st.subheader("Conversation")
 
-for chat in st.session_state.chat_history:
-    st.markdown(f"**You:** {chat['question']}")
-    st.markdown(f"**Assistant:** {chat['answer']}")
+if not st.session_state.chat_history:
+    st.caption(
+        "No questions have been asked yet."
+    )
 
-    with st.expander("Sources Used"):
-        for i, doc in enumerate(chat["sources"], start=1):
-            st.markdown(f"**Source {i}**")
-            st.write(f"File: {doc.metadata.get('source')}")
-            st.write(f"Page: {doc.metadata.get('page')}")
-            st.write(doc.page_content[:1200])
+for chat in reversed(
+    st.session_state.chat_history
+):
+    st.markdown(
+        f"**You:** {chat['question']}"
+    )
+
+    st.markdown(
+        f"**Assistant:** {chat['answer']}"
+    )
+
+    sources = chat.get(
+        "sources",
+        [],
+    )
+
+    if sources:
+        with st.expander(
+            f"Sources used ({len(sources)})"
+        ):
+            for index, source in enumerate(
+                sources,
+                start=1,
+            ):
+                source_name = source.metadata.get(
+                    "source",
+                    "Unknown document",
+                )
+
+                location = source.metadata.get(
+                    "location",
+                    "Unknown location",
+                )
+
+                st.markdown(
+                    f"**Source {index}: "
+                    f"{source_name}, {location}**"
+                )
+
+                st.write(
+                    source.page_content[:800]
+                )
+
+                if len(source.page_content) > 800:
+                    st.caption(
+                        "Source preview shortened."
+                    )
+
+                st.divider()
 
     st.divider()
