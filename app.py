@@ -53,28 +53,6 @@ st.markdown(
             margin-bottom: 2rem;
         }
 
-        .metric-card {
-            min-height: 135px;
-            padding: 1.3rem 1.4rem;
-            background-color: #ffffff;
-            border: 1px solid #d9dde7;
-            border-radius: 13px;
-            box-shadow: 0 2px 8px rgba(16, 24, 40, 0.04);
-        }
-
-        .metric-label {
-            color: #7a8292;
-            font-size: 0.95rem;
-            margin-bottom: 1.5rem;
-        }
-
-        .metric-value {
-            color: #14213d;
-            font-size: 2rem;
-            font-weight: 700;
-            line-height: 1;
-        }
-
         .question-heading,
         .conversation-heading {
             color: #172033;
@@ -83,7 +61,7 @@ st.markdown(
         }
 
         .question-heading {
-            margin-top: 1.6rem;
+            margin-top: 0.5rem;
             margin-bottom: 0.8rem;
         }
 
@@ -358,18 +336,6 @@ def reset_conversation_state() -> None:
     st.session_state.chat_history = []
 
 
-def render_metric_card(label: str, value: int) -> None:
-    st.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-label">{label}</div>
-            <div class="metric-value">{value}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def render_source(source: Any, source_number: int) -> None:
     metadata = getattr(source, "metadata", {}) or {}
     source_name = metadata.get("source", "Unknown document")
@@ -530,17 +496,6 @@ st.markdown(
 )
 
 index_result = st.session_state.index_result
-uploaded_file_count = index_result.total_files if index_result is not None else 0
-document_unit_count = index_result.total_pages if index_result is not None else 0
-indexed_chunk_count = index_result.total_chunks if index_result is not None else 0
-
-metric_column_1, metric_column_2, metric_column_3 = st.columns(3, gap="large")
-with metric_column_1:
-    render_metric_card("Uploaded files", uploaded_file_count)
-with metric_column_2:
-    render_metric_card("Document units", document_unit_count)
-with metric_column_3:
-    render_metric_card("Indexed chunks", indexed_chunk_count)
 
 st.markdown('<div class="question-heading">Ask your documents</div>', unsafe_allow_html=True)
 
